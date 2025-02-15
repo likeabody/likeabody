@@ -1,0 +1,177 @@
+clc;
+clear;
+close all;
+tic;
+% 导入 Excel 中的信号数据
+data = readmatrix('data.csv');  % 读取整个表格
+
+% 假设信号数据在第一列
+x = data(:,2:10);  % 将 Excel 文件中的第一列赋值给信号变量 x
+% 如果您有特定的采样率，可以这样定义 t
+fs = 4000;  % 采样频率（可根据需要调整）
+N = length(x);  % 信号长度
+t = (0:N-1)'/fs;  % 生成时间向量
+
+% 生成含噪信号
+nt = 0.2 * randn(N, 1);  % 噪声
+y = x + nt;  % 含噪信号
+fs=4000;   % 采样频率为4000Hz
+t=(0:1/fs:(2-1/fs))';
+N=length(t);
+x1=0.25*cos(0.875*pi*50*t);
+x2=0.3*sin(2*pi*50*t).*(1+1.5*sin(0.5*pi*40*t));
+x3=0.15*exp(-15*t).*sin(200*pi*t);
+x=x1+x2+x3;
+nt=0.2*randn(N,1);
+y=x+nt;
+figure;%画原始信号时域和频域图
+subplot(211);plot(t,x2);title('原始信号时域波形');
+subplot(212);hua_fft(y,fs,1);title('原始信号频谱')
+
+%% CEEMDAN分解
+Nstd = 0.2;                % 正负高斯白噪声标准表
+NR = 100;                  % 加入噪声的次数
+MaxIter = 100;            % 最大迭代次数
+[imf, its]=ceemdan(y,Nstd,NR,MaxIter);
+[m, n]=size(imf);
+CC=zeros(1,m);  % 相关系数
+figure;
+for i=1:m
+    subplot(m,1,i);plot(imf(i,:));ylabel(['IMF',num2str(i)]);
+    CC(i)=corr(imf(i,:)',y,'type','Pearson');   % 相关系数
+end
+
+figure;
+for o=1:m
+    subplot(m,1,o);hua_fft(imf(o,:),fs,1);title(sprintf('IMF%d分量频谱', o));
+end
+%% 选择相关系数较大的分量进行小波降噪
+threshold = 0.4; % 相关系数阈值
+indices = find(CC > threshold); % 大于阈值的索引集合
+len_indices = length(indices); % 满足条件的索引个数
+sum_imf = sum(imf(indices,:),1);  % 将满足大于阈值的分量进行重构
+%% 小波
+% 小波降噪
+wname = 'db4'; % 小波基
+level = 3; % 分解层数
+
+% 将 sum_imf重构后信号进行小波包分解
+[c, l] = wavedec(y, level, wname);
+
+% 对每个细节系数进行软阈值处理
+for i = 1:level
+    start_index = l(i) + 1;
+    end_index = l(i + 1);
+    %thr=thselect(c(start_index:end_index),'rigrsure');              % 自适应阈值获取
+    %thr=thselect(c(start_index:end_index),'heursure');              % 启发式阈值获取
+    %thr=thselect(c(start_index:end_index),'minimaxi');              % 极大极小原理阈值获取
+    %thr = Donoho(c(start_index:end_index));                          % 计算Donoho全局阈值
+    thr = 0.5*sqrt(2*log(N));                                        % %阈值0.5*sqrt(2*log(N))
+    c(start_index:end_index) = wthresh(c(start_index:end_index), 's',  thr); 
+end
+
+% 将去噪后的信号进行小波重构
+YE = waverec(c, l, wname);
+%% CEEMDAN联合小波降噪
+wname = 'db4'; % 小波基
+level = 3; % 分解层数
+
+% 将 sum_imf重构后信号进行小波分解
+[c, l] = wavedec(sum_imf, level, wname);
+
+% 对每个细节系数进行软阈值处理
+for i = 1:level
+    start_index = l(i) + 1;
+    end_index = l(i + 1);
+    %thr=thselect(c(start_index:end_index),'rigrsure');              % 自适应阈值获取
+    %thr=thselect(c(start_index:end_index),'heursure');              % 启发式阈值获取
+    %thr=thselect(c(start_index:end_index),'minimaxi');              % 极大极小原理阈值获取
+    %thr = Donoho(c(start_index:end_index));                          % 计算Donoho全局阈值
+    thr = 0.5*sqrt(2*log(N));                                        % %阈值0.5*sqrt(2*log(N))
+    c(start_index:end_index) = wthresh(c(start_index:end_index), 's',  thr); 
+end
+
+% 将去噪后的信号进行小波重构
+Y = waverec(c, l, wname);
+
+%% 画图
+% 时域波形对比图
+figure;
+subplot(4,1,1);plot(t,x);xlabel('t/s');ylabel('幅值');title('原始信号x(t)');
+subplot(4,1,2);plot(t,y);xlabel('t/s');ylabel('幅值');title('含噪信号y(t)');
+subplot(4,1,3);plot(t,YE);xlabel('t/s');ylabel('幅值');title('小波降噪后信号Y(t)');
+subplot(4,1,4);plot(t,Y);xlabel('t/s');ylabel('幅值');title('联合去噪后信号Y(t)');
+figure;
+subplot(411);hua_fft(x,fs,1);title('原始信号频谱');
+subplot(412);hua_fft(y,fs,1);title('含噪信号频谱');
+subplot(413);hua_fft(YE,fs,1);title('小波去噪信号频谱');
+subplot(414);hua_fft(Y,fs,1);title('联合去噪信号频谱');
+%% 小波包降噪评价指标
+YE=YE; % 保持维度一致
+% 降噪前信噪比
+p1=sum(abs(y).^2)/N;
+p2=sum(abs(nt).^2)/N;
+SNRE(1)=10*log10(p1/p2);
+% 降噪后信噪比
+p3=sum(abs(YE).^2)/N;
+p4=sum(abs(YE-x).^2)/N;
+SNRE(2)=10*log10(p3/p4);
+% 均方根误差
+RMSEE=sqrt(mean((YE-x).^2));
+CEE=corr(YE,x,'type','Pearson');
+%% 联合降噪评价指标
+Y=Y'; % 保持维度一致
+% 降噪前信噪比
+p1=sum(abs(y).^2)/N;
+p2=sum(abs(nt).^2)/N;
+SNR(1)=10*log10(p1/p2);
+% 降噪后信噪比
+p3=sum(abs(Y).^2)/N;
+p4=sum(abs(Y-x).^2)/N;
+SNR(2)=10*log10(p3/p4);
+% 均方根误差
+RMSE=sqrt(mean((Y-x).^2));
+CE=corr(Y,x,'type','Pearson');
+toc;
+%% 小波降噪SNR对比绘图
+% 使用条形图展示SNR  
+figure;  
+bar([SNRE(1), SNRE(2)], 'EdgeColor', 'black');  % 创建条形图，没有边框  
+hold on;  % 保持当前图形，以便添加其他元素  
+  
+% 设置x轴标签和刻度  
+xticklabels = {'降噪前SNR', '降噪后SNR'};  % x轴标签  
+set(gca, 'XTick', xticks, 'XTickLabel', xticklabels);  
+  
+% 设置y轴标签  
+ylabel('信噪比 (dB)');  
+  
+% 添加标题  
+title('小波包降噪前后信噪比对比');  
+
+% 如果需要，可以设置网格线等  
+grid on;  
+  
+% 完成绘图  
+hold off;
+%% 联合降噪SNR对比绘图
+% 使用条形图展示SNR  
+figure;  
+bar([SNR(1), SNR(2)], 'EdgeColor', 'black');  % 创建条形图，没有边框  
+hold on;  % 保持当前图形，以便添加其他元素  
+  
+% 设置x轴标签和刻度  
+xticklabels = {'降噪前SNR', '降噪后SNR'};  % x轴标签  
+set(gca, 'XTick', xticks, 'XTickLabel', xticklabels);  
+  
+% 设置y轴标签  
+ylabel('信噪比 (dB)');  
+  
+% 添加标题  
+title('联合降噪前后信噪比对比');  
+
+% 如果需要，可以设置网格线等  
+grid on;  
+  
+% 完成绘图  
+hold off;
